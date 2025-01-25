@@ -1,0 +1,83 @@
+name: Persistent OpenVPN Server
+
+on:
+  workflow_dispatch: # Allows manual triggering of the action
+  
+jobs:
+  setup_openvpn:
+    runs-on: ubuntu-latest # Or any Ubuntu-based image
+    
+    steps:
+      - name: Update Package List
+        run: sudo apt update
+        
+      - name: Install OpenVPN and easy-rsa
+        run: sudo apt install -y openvpn easy-rsa
+        
+      - name: Configure OpenVPN Server (Basic - Needs More Customization)
+        run: |
+          sudo cp /usr/share/easy-rsa/easyrsa3 /etc/openvpn
+          cd /etc/openvpn/easyrsa3
+          sudo ./easyrsa init-pki
+          sudo ./easyrsa build-ca nopass
+          sudo ./easyrsa build-server-full server nopass
+          sudo ./easyrsa gen-dh
+          sudo ./easyrsa build-client-full client1 nopass
+          sudo cp pki/ca.crt pki/issued/server.crt pki/private/server.key pki/dh.pem /etc/openvpn/
+          sudo cp pki/ca.crt pki/issued/client1.crt pki/private/client1.key /etc/openvpn/
+          sudo openvpn --genkey --secret ta.key
+          sudo cp ta.key /etc/openvpn/
+          sudo cp /usr/share/doc/openvpn/examples/sample-config-files/server.conf.gz /etc/openvpn
+          sudo gunzip /etc/openvpn/server.conf.gz
+          
+          sudo sed -i 's/port 1194/port 443/' /etc/openvpn/server.conf
+          sudo sed -i 's/proto udp/proto tcp/' /etc/openvpn/server.conf
+          sudo sed -i 's/;push "redirect-gateway def1 bypass-dhcp"/push "redirect-gateway def1 bypass-dhcp"/' /etc/openvpn/server.conf
+          sudo sed -i 's/;client-to-client/client-to-client/' /etc/openvpn/server.conf
+          sudo sed -i 's/;user nobody/user nobody/' /etc/openvpn/server.conf
+          sudo sed -i 's/;group nogroup/group nogroup/' /etc/openvpn/server.conf
+          sudo sed -i 's/;server 10.8.0.0 255.255.255.0/server 10.8.0.0 255.255.255.0/' /etc/openvpn/server.conf
+          echo "tls-auth ta.key 0" | sudo tee -a /etc/openvpn/server.conf
+          echo "key-direction 0" | sudo tee -a /etc/openvpn/server.conf
+           echo "keepalive 10 120" | sudo tee -a /etc/openvpn/server.conf
+          sudo chown root:root /etc/openvpn/server.conf
+        
+      - name: Start OpenVPN Server (Detached - Will Keep Running)
+        run: sudo nohup openvpn --config /etc/openvpn/server.conf > openvpn.log 2>&1 &
+        
+      - name:  Wait a few seconds to keep the action alive 
+        run: sleep 10 
+        
+      - name: Display Log (This will be the last log)
+        run: cat openvpn.log
+
+      - name: Create client.ovpn file
+        run: |
+            echo "client" >> client.ovpn
+            echo "dev tun" >> client.ovpn
+            echo "proto tcp" >> client.ovpn
+            echo "remote $(curl -s https://api.ipify.org) 443" >> client.ovpn
+            echo "resolv-retry infinite" >> client.ovpn
+            echo "nobind" >> client.ovpn
+            echo "persist-key" >> client.ovpn
+            echo "persist-tun" >> client.ovpn
+            echo "remote-cert-tls server" >> client.ovpn
+            echo "verb 3" >> client.ovpn
+            echo "<ca>" >> client.ovpn
+            cat /etc/openvpn/ca.crt >> client.ovpn
+            echo "</ca>" >> client.ovpn
+            echo "<cert>" >> client.ovpn
+            cat /etc/openvpn/client1.crt >> client.ovpn
+            echo "</cert>" >> client.ovpn
+            echo "<key>" >> client.ovpn
+            cat /etc/openvpn/client1.key >> client.ovpn
+            echo "</key>" >> client.ovpn
+            echo "<tls-auth>" >> client.ovpn
+            cat /etc/openvpn/ta.key >> client.ovpn
+            echo "</tls-auth>" >> client.ovpn
+
+      - name: Upload client.ovpn
+        uses: actions/upload-artifact@v3
+        with:
+          name: client-config
+          path: client.ovpn
